@@ -96,6 +96,64 @@ def icc(Y, icc_type='ICC(2,1)'):
 
 	return ICC
 
+import numpy as np
+import scipy.io as sio
+import scipy.stats as sstats
+
+def icc(M):
+	"""ICC Intraclass correlation coefficient.
+	Calculates ICC is for a two-way, fully crossed random efects model.
+	This type of ICC is appropriate to describe the absolute agreement 
+	among shape measurements from a group of k raters, randomly selected 
+	from the population of all raters, made on a set of n items.  
+	Shrout and Fleiss: ICC(2,1)
+	McGraw and Wong:   ICC(A,1)
+	M is the array of measurements
+		The dimensions of M are n x k, where
+			n is the # of subjects / groups
+			k is the # of raters """
+
+	if not isinstance(M, np.ndarray):
+		raise TypeError("Input must be a numpy array")
+
+	n, k = M.shape
+
+	u1 = np.mean(M, axis = 0)
+	u2 = np.mean(M, axis = 1)
+	u = np.mean(M[:])
+
+	SS = np.sum((M - u) ** 2)
+	MSR = k/(n-1) * np.sum((u2-u) ** 2)
+	MSC = n/(k-1) * np.sum((u1-u) ** 2)
+	MSE = (SS - (n-1)*MSR - (k-1)*MSC) / ((n-1)*(k-1))
+	icc = (MSR - MSE) / (MSR + (k-1)*MSE + k/n*(MSC-MSE))
+	
+	#from ICC(A,1) - in IRR package
+	ns = n
+	nr = k
+	coeff = (MSR - MSE)/(MSR + (nr - 1) * MSE + 
+				  (nr/ns) * (MSC - MSE))
+	r0 = 0
+	a = (nr * r0)/(ns * (1 - r0))
+	b = 1+ (nr * r0 * (ns - 1))/(ns * (1 - r0))    
+	Fvalue = MSR/(a * MSC + b * MSE)
+
+	alpha = 1 - 0.95
+	a = (nr * coeff)/(ns * (1 - coeff))
+	b = 1 + (nr * coeff * (ns - 1))/(ns * (1 - coeff))
+	v = (a * MSC + b * MSE)**2/((a * MSC)**2/(nr - 1) + (b * MSE)**2/((ns - 1) * (nr - 1)))
+	#p.value <- pf(Fvalue, df1, df2, lower.tail = FALSE)
+	#FL <- qf(1 - alpha/2, ns - 1, v)
+	#FU <- qf(1 - alpha/2, v, ns - 1)
+
+	FL = sstats.f.ppf(1 - alpha/2, ns - 1, v)
+	FU = sstats.f.ppf(1 - alpha/2, v, ns - 1)
+
+	lbound = (ns * (MSR - FL * MSE))/(FL * (nr * MSC + (nr * ns - nr - ns) * MSE) + ns * MSR)
+	ubound = (ns * (FU * MSR - MSE))/(nr * MSC + (nr * ns - nr - ns) * MSE + ns * FU * MSR)
+	
+	return icc, Fvalue, lbound, ubound
+
 def ICC_rep_anova(Y):
 	'''
 	the data Y are entered as a 'table' ie subjects are in rows and repeated
@@ -178,10 +236,10 @@ title_dic = {
 
 #%%
 
-input_dir=r'/media/veracrypt6/projects/stealthMRI/imaging/clinical/derivatives/validation'
+input_dir=r'/media/veracrypt6/projects/stealthMRI/derivatives/validation'
 
 patient_ignore=['sub-P084','sub-P062','sub-P156','sub-P161']
-out_path='/media/greydon/KINGSTON34/phdCandidacy/thesis/imgs'
+out_path='/media/greydon/Downloads'
 xls = pd.ExcelFile('/media/veracrypt6/projects/stealthMRI/resources/excelFiles/dbsChartReview.xlsx')
 
 #--- Import excel data and clean ---
@@ -490,10 +548,11 @@ plt.close()
 
 #%% descriptive plots
 
-error_data_melt=np.c_[np.r_[error_data.loc[:,"stealth_error"].values,error_data.loc[:,"trajectoryGuide_error"].values], 
+error_data_melt=np.c_[np.r_[error_data.loc[:,["stealth_error",'subject']].values,error_data.loc[:,["trajectoryGuide_error",'subject']].values],
 					  np.r_[np.repeat(1,len(error_data.loc[:,"stealth_error"].values)).astype(int), np.repeat(2,len(error_data.loc[:,"trajectoryGuide_error"].values)).astype(int)]]
+
 error_data_melt=pd.DataFrame(error_data_melt)
-error_data_melt.rename(columns={0: 'error', 1: 'system'}, inplace=True)
+error_data_melt.rename(columns={0: 'error', 1: 'subject',2:'system'}, inplace=True)
 
 error_data_melt.loc[error_data_melt.system==1, 'system'] = "StealthStation"
 error_data_melt.loc[error_data_melt.system==2, 'system'] = "trajectoryGuide"
@@ -891,8 +950,9 @@ stat,p=stats.f_twoway(error_data_melt[error_data_melt['system']==1]['error'],err
 print('Statistics=%.3f, p=%.3f' % (stat, p))
 race_pairs = []
 
+pg.intraclass_corr(data=error_data_melt, targets='subject',ratings='error',raters='system')
 
-
+t=IPN_icc(np.c_[error_data_melt[error_data_melt['system']=='StealthStation']['error'], error_data_melt[error_data_melt['system']=='trajectoryGuide']['error']], 2, 'k')
 aov = pg.anova(data=error_data_melt, dv='error', between='system', detailed=True)
 print(aov)
 
@@ -904,7 +964,8 @@ Results = mcDate.tukeyhsd()
 print(Results)
 
 print(pairwise_tukeyhsd(error_data_melt['error'], error_data_melt['system']))
-	
+
+pg.intraclass_corr()
 #%%
 def distance_from_line(p_1, p_2, p_3):
     """
@@ -925,8 +986,85 @@ def rms(x):
     return np.sqrt(np.vdot(x, x)/x.size)
 
 
+#%%
 
 
+def IPN_icc(X, cse, typ):
+	"""
+	Computes the interclass correlations for indexing the reliability analysis 
+	according to shrout & fleiss' schema.
+	INPUT:
+	x   - ratings data matrix, data whose columns represent different
+		 ratings/raters & whose rows represent different cases or 
+		 targets being measured. Each target is assumed too be a random
+		 sample from a population of targets.
+	cse - 1 2 or 3: 1 if each target is measured by a different set of 
+		 raters from a population of raters, 2 if each target is measured
+		 by the same raters, but that these raters are sampled from a 
+		 population of raters, 3 if each target is measured by the same 
+		 raters and these raters are the only raters of interest.
+	typ - 'single' or 'k': denotes whether the ICC is based on a single
+		 measurement or on an average of k measurements, where 
+		 k = the number of ratings/raters.
+	REFERENCE:
+	Shrout PE, Fleiss JL. Intraclass correlations: uses in assessing rater
+	reliability. Psychol Bull. 1979;86:420-428
+	"""     
+
+	[n, k] = np.shape(X)
+	
+	# mean per target
+	mpt = np.mean(X, axis=1)
+	# mean per rater/rating
+	mpr = np.mean(X, axis=0)
+	# get total mean
+	tm = np.mean(X)
+	# within target sum sqrs
+	tmp = np.square(X - np.tile(mpt,(k,1)).T)
+	WSS = np.sum(tmp)
+	# within target mean sqrs
+	WMS = float(WSS) / (n*(k - 1));
+	# between rater sum sqrs
+	RSS = np.sum(np.square(mpr - tm)) * n
+	# between rater mean sqrs
+	RMS = RSS / (float(k) - 1);
+	# between target sum sqrs
+	BSS = np.sum(np.square(mpt - tm)) * k
+	# between targets mean squares
+	BMS = float(BSS) / (n - 1)
+	# residual sum of squares
+	ESS = float(WSS) - RSS
+	# residual mean sqrs
+	EMS = ESS / ((k - 1) * (n - 1))
+
+	if cse == 1:
+		if typ == 'single':
+			ICC = (BMS - WMS) / (BMS + (k - 1) * WMS)
+		elif typ == 'k':
+			ICC = (BMS - WMS) / BMS
+		else:
+			print("Wrong value for input type")
+
+	elif cse == 2:
+		if typ == 'single':
+			ICC = (BMS - EMS) / (BMS + (k - 1) * EMS + k * (RMS - EMS) / n)
+		elif typ == 'k':
+			ICC = (BMS - EMS) / (BMS + (RMS - EMS) / n)
+		else:
+			print("Wrong value for input type")
+
+	elif cse == 3:
+		if typ == 'single':
+			ICC = (BMS - EMS) / (BMS + (k - 1) * EMS)
+		elif typ == 'k':
+			ICC = (BMS - EMS) / BMS
+		else:
+			print("Wrong value for input type")
+
+	else:
+		print("Wrong value for input type")
+
+	return ICC
 
 
 
