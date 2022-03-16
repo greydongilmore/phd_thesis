@@ -8,6 +8,23 @@ Created on Sat Mar 12 08:11:06 2022
 
 import numpy as np
 import math
+import pandas as pd
+
+def closest_point_and_distance(p, a, b):
+	"""returns both the closest point and the distance.
+	"""
+	s = b - a
+	w = p - a
+	ps = np.dot(w.T, s)
+	if ps <= 0:
+		return [a, np.linalg.norm(w)]
+	l2 = np.dot(s.T, s)
+	if ps >= l2:
+		closest = b
+	else:
+		closest = a + ps / l2 * s
+	return [closest, np.linalg.norm(p - closest)]
+
 
 def AOPA_Major(X, Y, tol):
 	"""
@@ -100,46 +117,64 @@ def p2l(X, Y, D, tol):
 	fre = np.sum(np.linalg.norm(E,ord=2,axis=0,keepdims=True))/X.shape[1]
 	return[R,t,A,Q,fre]
 
-def closest_point_and_distance(p, a, b):
-	"""returns both the closest point and the distance.
-	"""
-	s = b - a
-	w = p - a
-	ps = np.dot(w.T, s)
-	if ps <= 0:
-		return [a, np.linalg.norm(w)]
-	l2 = np.dot(s.T, s)
-	if ps >= l2:
-		closest = b
-	else:
-		closest = a + ps / l2 * s
-	return [closest, np.linalg.norm(p - closest)]
+def prep_p2l(X,Y):
+	R = np.eye(3)
+	T = np.zeros((3, 1))
+	# Arun equation 4
+	p = np.ndarray.mean(X, 0)
+	# Arun equation 6
+	p_prime = np.ndarray.mean(Y, 0)
+	# Arun equation 7
+	q = X - p
+	# Arun equation 8
+	q_prime = Y - p_prime
+	# Arun equation 11
+	H = np.matmul(q.transpose(), q_prime)
+	svd = np.linalg.svd(H)
+	VU = np.matmul(svd[2].transpose(), svd[0])
+	detVU = np.linalg.det(VU)
+	diag = np.eye(3, 3)
+	diag[2][2] = detVU
+	R = np.matmul(svd[2].transpose(), np.matmul(diag, svd[0].transpose()))
+	tmp = p_prime.transpose() - np.matmul(R, p.transpose())
+	X=X.T
+	Y=Y.T
+	T[0][0] = tmp[0]
+	T[1][0] = tmp[1]
+	T[2][0] = tmp[2]
+	return X,Y,T
 
-dim = 3
-n = 10
+
+ifile=r'/media/veracrypt6/projects/stealthMRI/derivatives/trajectoryGuide/derivatives/sub-P150/frame/sub-P150_space-leksellg_desc-centroids_fids.tsv'
+ifile2=r'/home/greydon/Downloads/sub-P150_space-leksellg_desc-fiducials_fids.fcsv'
+df_tmp = pd.read_csv( ifile, header=0,sep='\t')
+Y = df_tmp[['ideal_x','ideal_y','ideal_z']].to_numpy()
+
+df_tmp2 = pd.read_csv( ifile2, header=2,sep=',')
+X = df_tmp2[['x','y','z']].to_numpy()
+
+X,Y,D=prep_p2l(X,Y)
+
+X.shape,Y.shape,D.shape
+R,t,A,Q,fre=p2l(X, Y, D, .0005)
+
+R=R.T
+t=t.T
+
+lps2ras = np.diag([-1, -1, 1])
+data = np.eye(4)
+data[0:3, 3] = t
+data[:3, :3] = np.dot(np.dot(lps2ras, R), lps2ras)
+
+transform_matrix = vtk.vtkMatrix4x4()
+dimensions = len(data) - 1
+for row in range(dimensions + 1):
+	for col in range(dimensions + 1):
+		transform_matrix.SetElement(row, col, data[(row, col)])
 
 
-X = np.random.rand( dim, n )
+inputTransform = slicer.mrmlScene.AddNode(slicer.vtkMRMLLinearTransformNode())
+inputTransform.SetName('p2l')
+transformOut.SetMatrixTransformFromParent(transform_matrix)
 
-gt_A = np.identity(dim) * np.random.rand(dim,1)
 
-gt_R=rotation_matrix(pitch,roll, yaw)
-
-gt_t = np.random.rand(3,1) * 10
-print('Ground truth rotation:\n', gt_R, '\nGround truth translation\n', gt_t, '\nGround truth scaling\n', gt_A)
-
-e = np.ones((1,n))
-Y = np.matmul( np.matmul(gt_R, gt_A), X ) + np.matmul(gt_t,e)
-
-#print(X)
-#print(Y)
-[R,t,A] = AOPA_Major(X, Y, 1e-9)
-print('Computed rotation:\n', R, '\nComputed translation\n', t, '\nComputed scaling\n',A)
-
-test=np.c_[np.array([0.51346663,0.59783665,0.26221566]),np.tile(np.array([0.51346663,0.59783665,0.26221566]),(3,3))]
-
-tm,Q,fre=p2l(X,Y,D,.0005)
-
-frameRotation = slicer.mrmlScene.AddNode(slicer.vtkMRMLLinearTransformNode())
-frameRotation.SetName('frame_rotation')
-frameRotation.SetMatrixTransformFromParent(tm)

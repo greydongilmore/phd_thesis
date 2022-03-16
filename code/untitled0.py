@@ -1,63 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Aug 24 16:02:30 2021
+Created on Wed Mar 16 00:56:33 2022
 
 @author: greydon
 """
 
-import vtk
-import nrrd
-import re
-import pandas as pd
-import nibabel as nb
-import numpy as np
-import matplotlib.pyplot as plt
-import itertools
+fixed_orig =  slicer.util.arrayFromMarkupsControlPoints(getNode('frameSystemFiducials'))
+moving_orig = slicer.util.arrayFromMarkupsControlPoints(getNode('sub-P150_desc-fiducials_fids'))
 
 
-def bbox2(img):
-	rows = np.any(img, axis=(1, 2))
-	cols = np.any(img, axis=(0, 2))
-	z = np.any(img, axis=(0, 1))
-	
-	ymin, ymax = np.where(rows)[0][[0, -1]]
-	xmin, xmax = np.where(cols)[0][[0, -1]]
-	zmin, zmax = np.where(z)[0][[0, -1]]
-	return img[ymin:ymax+1, xmin:xmax+1, zmin:zmax+1]
+fixed_orig = fixed_orig.T
+moving_orig = moving_orig.T
 
-def sorted_nicely(data, reverse = False):
-	convert = lambda text: int(text) if text.isdigit() else text
-	alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
-	
-	return sorted(data, key = alphanum_key, reverse=reverse)
+Ncoords, Npoints = fixed_orig.shape
+Ncoords_Y, Npoints_Y = moving_orig.shape
 
-atlas_labels = pd.read_table(r'/home/greydon/Documents/GitHub/seeg2bids-pipeline/resources/tpl-MNI152NLin2009cSym/tpl-MNI152NLin2009cSym_atlas-CerebrA_dseg.tsv')
-nrrd.reader.ALLOW_DUPLICATE_FIELD = False
-filedata, fileheader = nrrd.read(r'/home/greydon/Documents/GitHub/seeg2bids-pipeline/resources/desc-segmentations.seg.nrrd')
+Xbar = np.mean(fixed_orig,1)
+Ybar = np.mean(moving_orig,1)
 
-for iseg in sorted_nicely(list(fileheader)):
-	if iseg.startswith('Segment') and iseg.endswith('Name'):
-		new_label = atlas_labels.loc[atlas_labels['label']==int(fileheader[iseg.replace("Name","LabelValue")]),'hemi'].to_list()[0]
-		new_label = ' '.join([new_label, atlas_labels.loc[atlas_labels['label']==int(fileheader[iseg.replace("Name","LabelValue")]),'name'].to_list()[0]])
-		fileheader[iseg] = new_label.replace(" ","_")
+Xtilde = fixed_orig-np.tile(Xbar,(1,Npoints)).reshape(fixed_orig.shape)
+Ytilde = moving_orig-np.tile(Ybar,(1,Npoints_Y)).reshape(moving_orig.shape)
+H = moving_orig @ np.transpose(moving_orig)
+
+U, S, V= np.linalg.svd(H)
+
+VU = np.matmul(V.transpose(), U)
+detVU = np.linalg.det(VU)
+diag = np.eye(3, 3)
+diag[2][2] = np.linalg.det(VU)
+X = np.matmul(V.transpose(), np.matmul(diag, U.transpose()))
 
 
-data_obj=nb.load(r'/media/veracrypt6/projects/iEEG/imaging/clinical/deriv/atlasreg/sub-P067/sub-P067_space-MNI152NLin2009cSym_desc-SyN_T1w.nii.gz')
-data = bbox2(data_obj.get_fdata())
-nrrd.write('/media/veracrypt6/projects/iEEG/imaging/clinical/deriv/seega_scenes/sub-P067/sub-P067_desc-segmentations_3.seg.nrrd', data, fileheader)
-filedata, fileheader = nrrd.read('/media/veracrypt6/projects/iEEG/imaging/clinical/deriv/seega_scenes/sub-P067/sub-P067_desc-segmentations_3.seg.nrrd')
-
-a = np.where(data != 0)
-bbox = np.min(a[0]), np.max(a[0]), np.min(a[1]), np.max(a[1])
-nrrd.write('/media/veracrypt6/projects/iEEG/imaging/clinical/deriv/seega_scenes/sub-P067/sub-P067_desc-segmentations_2.seg.nrrd', filedata, fileheader)
-
-
-fig, ax = plt.subplots(1, 1)
-tracker2 = IndexTracker(ax, data1, points=None,rotate_img=False, rotate_points=False)
-fig.canvas.mpl_connect('scroll_event', tracker2.on_scroll)
-plt.show()
-
-nrrd.write('/media/veracrypt6/projects/iEEG/imaging/clinical/deriv/seega_scenes/sub-P067/sub-P067_desc-segmentations_3.seg.nrrd', data, fileheader)
-
-
+R = V*np.diag(np.c_[1, 1, np.linalg.det(V@U)])*U.T
+t = Ybar - R@Xbar
+FREvect = R@fixed_orig + np.tile(t,(1,Npoints)).reshape(3,801) - moving_orig
+FRE = np.sqrt(np.mean(np.sum(FREvect**2,0)))
