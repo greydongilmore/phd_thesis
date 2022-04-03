@@ -26,6 +26,7 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import statsmodels.stats.multicomp as multi
 import pingouin as pg
 import matplotlib.gridspec as gridspec
+from statannotations.Annotator import Annotator
 
 
 def icc(Y, icc_type='ICC(2,1)'):
@@ -100,60 +101,6 @@ import numpy as np
 import scipy.io as sio
 import scipy.stats as sstats
 
-def icc(M):
-	"""ICC Intraclass correlation coefficient.
-	Calculates ICC is for a two-way, fully crossed random efects model.
-	This type of ICC is appropriate to describe the absolute agreement 
-	among shape measurements from a group of k raters, randomly selected 
-	from the population of all raters, made on a set of n items.  
-	Shrout and Fleiss: ICC(2,1)
-	McGraw and Wong:   ICC(A,1)
-	M is the array of measurements
-		The dimensions of M are n x k, where
-			n is the # of subjects / groups
-			k is the # of raters """
-
-	if not isinstance(M, np.ndarray):
-		raise TypeError("Input must be a numpy array")
-
-	n, k = M.shape
-
-	u1 = np.mean(M, axis = 0)
-	u2 = np.mean(M, axis = 1)
-	u = np.mean(M[:])
-
-	SS = np.sum((M - u) ** 2)
-	MSR = k/(n-1) * np.sum((u2-u) ** 2)
-	MSC = n/(k-1) * np.sum((u1-u) ** 2)
-	MSE = (SS - (n-1)*MSR - (k-1)*MSC) / ((n-1)*(k-1))
-	icc = (MSR - MSE) / (MSR + (k-1)*MSE + k/n*(MSC-MSE))
-	
-	#from ICC(A,1) - in IRR package
-	ns = n
-	nr = k
-	coeff = (MSR - MSE)/(MSR + (nr - 1) * MSE + 
-				  (nr/ns) * (MSC - MSE))
-	r0 = 0
-	a = (nr * r0)/(ns * (1 - r0))
-	b = 1+ (nr * r0 * (ns - 1))/(ns * (1 - r0))    
-	Fvalue = MSR/(a * MSC + b * MSE)
-
-	alpha = 1 - 0.95
-	a = (nr * coeff)/(ns * (1 - coeff))
-	b = 1 + (nr * coeff * (ns - 1))/(ns * (1 - coeff))
-	v = (a * MSC + b * MSE)**2/((a * MSC)**2/(nr - 1) + (b * MSE)**2/((ns - 1) * (nr - 1)))
-	#p.value <- pf(Fvalue, df1, df2, lower.tail = FALSE)
-	#FL <- qf(1 - alpha/2, ns - 1, v)
-	#FU <- qf(1 - alpha/2, v, ns - 1)
-
-	FL = sstats.f.ppf(1 - alpha/2, ns - 1, v)
-	FU = sstats.f.ppf(1 - alpha/2, v, ns - 1)
-
-	lbound = (ns * (MSR - FL * MSE))/(FL * (nr * MSC + (nr * ns - nr - ns) * MSE) + ns * MSR)
-	ubound = (ns * (FU * MSR - MSE))/(nr * MSC + (nr * ns - nr - ns) * MSE + ns * FU * MSR)
-	
-	return icc, Fvalue, lbound, ubound
-
 def ICC_rep_anova(Y):
 	'''
 	the data Y are entered as a 'table' ie subjects are in rows and repeated
@@ -214,6 +161,17 @@ def sorted_nicely(data, reverse = False):
 	return sorted(data, key = alphanum_key, reverse=reverse)
 
 
+def outlier_removal_IQR(data):
+	Q1=data.quantile(0.25)
+	Q3=data.quantile(0.75)
+	iqr=6*(Q3-Q1)
+	q1_idx = data[data < Q1-iqr]
+	data = data.drop(q1_idx)
+	q3_idx = data[data > Q3+iqr]
+	data = data.drop(q3_idx)
+	
+	return data
+
 fontTitle = {
 	'family': 'DejaVu Sans',
 	'weight': 'bold',
@@ -236,10 +194,11 @@ title_dic = {
 
 #%%
 
-input_dir=r'/media/veracrypt6/projects/stealthMRI/derivatives/validation'
+input_dir=r'/media/veracrypt6/projects/stealthMRI/derivatives/validation/version_02'
 
-patient_ignore=['sub-P084','sub-P062','sub-P156','sub-P161']
-out_path='/media/greydon/Downloads'
+#patient_ignore=['sub-P084','sub-P062','sub-P156','sub-P161']
+patient_ignore=[]
+out_path='/media/greydon/KINGSTON/phdCandidacy/thesis/imgs'
 xls = pd.ExcelFile('/media/veracrypt6/projects/stealthMRI/resources/excelFiles/dbsChartReview.xlsx')
 
 #--- Import excel data and clean ---
@@ -248,7 +207,7 @@ df = raw_data[raw_data["stealth_error"].notna()]
 df.round(2);
 
 
-data_dir=input_dir+'/registration_error'
+data_dir=input_dir+'/derivatives'
 
 
 avg_cluster=[]
@@ -267,16 +226,30 @@ tg_error=[]
 for isub in df['subject']:
 	tg_error.append(avg_cluster[avg_cluster['subject']==isub]['error'].mean())
 
-error_data=np.c_[df.loc[:,"stealth_error"].values,tg_error]
+error_data=np.c_[df.loc[:,"subject"].values.astype(int), df.loc[:,"stealth_error"].values,tg_error]
 error_data=pd.DataFrame(error_data)
-error_data.rename(columns={0: 'stealth_error', 1: 'trajectoryGuide_error'}, inplace=True)
-error_data = error_data[error_data["trajectoryGuide_error"].notna()]
+error_data.rename(columns={1: 'stealth_error', 2: 'trajectoryGuide_error',0:'subject'}, inplace=True)
+error_data = error_data[error_data["trajectoryGuide_error"].notna()].reset_index(drop=True)
+
+avg_cluster_coord=[]
+for isub in sorted_nicely([x for x in os.listdir(data_dir) if x not in patient_ignore]):
+	subject=int(''.join([x for x in isub if x.isnumeric()]))
+	for ifile in glob.glob(data_dir+f'/{isub}/frame/*_fids.tsv'):
+		df_tmp = pd.read_csv( ifile, header=0,sep='\t')
+		if 'clusters' in os.path.basename(ifile):
+			for icluster in df_tmp['label'].unique():
+				df_tmp['subject'] = np.repeat(subject, df_tmp.shape[0])
+				avg_cluster_coord.append(df_tmp)
+				
+avg_cluster_coord = pd.concat(avg_cluster_coord)
+avg_cluster_coord=pd.DataFrame(avg_cluster, columns = ['subject','label','x','y','z','error'])
+
 
 #%%
 
 
 
-data_dir=input_dir+'/frame_segmentation_tuning'
+data_dir=input_dir+'/derivatives'
 avg_cluster_params_seg=[]
 avg_cluster_coord_params_seg=[]
 
@@ -410,8 +383,8 @@ df=pd.DataFrame(np.c_[avg_cluster['label'].unique(),
 print(df.to_csv(header=None, index=None))
 
 
-sum_df=avg_cluster[['label','error','threshold']].groupby(['label','threshold'], as_index=False).mean()
-std_df=avg_cluster[['label','error','threshold']].groupby(['label','threshold'], as_index=False).std()
+sum_df=avg_cluster[['label','error']].groupby(['label'], as_index=False).mean()
+std_df=avg_cluster[['label','error']].groupby(['label'], as_index=False).std()
 
 values_matrix=[]
 for ilabel in sum_df['label'].unique():
@@ -557,13 +530,13 @@ error_data_melt.rename(columns={0: 'error', 1: 'subject',2:'system'}, inplace=Tr
 error_data_melt.loc[error_data_melt.system==1, 'system'] = "StealthStation"
 error_data_melt.loc[error_data_melt.system==2, 'system'] = "trajectoryGuide"
 
-fig = plt.figure(figsize=(14,12))
+fig = plt.figure(figsize=(12,12))
 gs = gridspec.GridSpec(4, 4)
 
 # violin plot of distributions
 ax = fig.add_subplot(gs[:2, :2])
 ax = sns.violinplot(x="system", y="error",data=error_data_melt,
-					split=True, inner="quartile", color="0.8", width=1)
+					split=True, inner="quartile", color="0.8", width=.5)
 
 sns.stripplot(x="system", y="error", data=error_data_melt, jitter=True, ax=ax)
 ax.set_xticks([0,1])
@@ -651,12 +624,6 @@ plt.close()
 
 
 #%%
-from statannotations.Annotator import Annotator
-
-
-
-
-
 
 
 slope, intercept, r_value, p_value, std_err = stats.linregress(error_data["stealth_error"], error_data["trajectoryGuide_error"])
@@ -722,8 +689,8 @@ limitOfAgreementRange = (md + (limitOfAgreement * sd)) - (md - limitOfAgreement*
 offset = (limitOfAgreementRange / 100.0) * 1.5
 ax2.text(-.2,1,'b)', transform=ax2.transAxes, fontsize=18, fontweight='bold')
 
-ax2.text(0.98, md + offset, 'Mean', ha="right", va="bottom", transform=trans,color='black', fontsize=12)
-ax2.text(0.98, md - offset, f'{md:.3f}', ha="right", va="top", transform=trans,color='black', fontsize=12)
+ax2.text(0.98, md - (offset*6), 'Mean', ha="right", va="bottom", transform=trans,color='black', fontsize=12)
+ax2.text(0.98, md - (offset*6), f'{md:.3f}', ha="right", va="top", transform=trans,color='black', fontsize=12)
 ax2.text(0.98, md + (limitOfAgreement * sd) + offset, f'+{limitOfAgreement:.3f} SD', ha="right", va="bottom", transform=trans,color='black', fontsize=12)
 ax2.text(0.98, md + (limitOfAgreement * sd) - offset, f'{md + limitOfAgreement*sd:.3f}', ha="right", va="top", transform=trans,color='black', fontsize=12)
 ax2.text(0.98, md - (limitOfAgreement * sd) - offset, f'-{limitOfAgreement:.3f} SD', ha="right", va="top", transform=trans,color='black', fontsize=12)
@@ -746,7 +713,7 @@ ax2.spines['bottom'].set_bounds(min(tickLocs), max(tickLocs))
 
 tickLocs = ax2.yaxis.get_ticklocs()
 cadenceY = tickLocs[2] - tickLocs[1]
-tickLocs = np.arange(cadenceY, max(diff)*2, cadenceY)
+tickLocs = np.arange(cadenceY, max(diff)*3, cadenceY)
 tickLocs = np.r_[-tickLocs[::-1], 0, tickLocs]
 ax2.yaxis.set_major_locator(ticker.FixedLocator(tickLocs))
 ax2.set_ylim(min(tickLocs), max(tickLocs))
@@ -786,19 +753,19 @@ cv = lambda x: np.std(x, ddof=1) / np.mean(x) * 100
 error_data.apply(cv)
 
 
-ind_t_test=ttest_ind(error_data_melt[error_data_melt['system']==1]['error'],error_data_melt[error_data_melt['system']==2]['error'])
+ind_t_test=ttest_ind(error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]]['error'],error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]]['error'])
 
-N1=error_data_melt[error_data_melt['system']==1].shape[0]
-N2=error_data_melt[error_data_melt['system']==2].shape[0]
-df = error_data_melt[error_data_melt['system']==1].shape[0] + error_data_melt[error_data_melt['system']==2].shape[0] - 2
+N1=error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]].shape[0]
+N2=error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]].shape[0]
+df = error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]].shape[0] + error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]].shape[0] - 2
 
 
-data1_mean = error_data_melt[error_data_melt['system']==1]['error'].mean()
-data2_mean = error_data_melt[error_data_melt['system']==2]['error'].mean()
+data1_mean = error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]]['error'].mean()
+data2_mean = error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]]['error'].mean()
 diff_mean = data1_mean - data2_mean
 
-data1_std = error_data_melt[error_data_melt['system']==1]['error'].std()
-data2_std = error_data_melt[error_data_melt['system']==2]['error'].std()
+data1_std = error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]]['error'].std()
+data2_std = error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]]['error'].std()
 std_N1N2 = np.sqrt(((N1 - 1)*(data1_std)**2 + (N2 - 1)*(data2_std)**2) / df)
 MoE = t.ppf(0.975, df) * std_N1N2 * np.sqrt(1/N1 + 1/N2)
 
@@ -806,7 +773,7 @@ print('The results of the independent t-test are: \n\tt-value = {:4.3f}\n\tp-val
 print ('\nThe difference between groups is {:3.3f} [{:3.3f} to {:3.3f}] (mean [95% CI])'.format(diff_mean, diff_mean - MoE, diff_mean + MoE))
 
 
-stat,pval=stats.ttest_rel(error_data_melt[error_data_melt['system']==1]['error'], error_data_melt[error_data_melt['system']==2]['error'])
+stat,pval=stats.ttest_rel(error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]]['error'], error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]]['error'])
 print(stat,pval)
 
 posthoc = pg.pairwise_ttests(data=error_data_melt, dv='error', between='system',parametric=True, padjust='fdr_bh', effsize='hedges')
@@ -821,9 +788,9 @@ print(Results)
 
 
 fig, axs = plt.subplots(1,figsize=(12,8))
-sns.boxplot(x="label", y="euclidean",data=avg_cluster_coord[avg_cluster_coord['coord']=='x'],ax=axs)
+sns.boxplot(x="label", y="error",data=avg_cluster_coord,ax=axs)
 
-sns.swarmplot(x="label", y="euclidean", data=avg_cluster_coord, ax=axs, size=3,color=".6")
+sns.swarmplot(x="label", y="error", data=avg_cluster_coord, ax=axs, size=3,color=".6")
 axs.set_xticklabels(avg_cluster_coord['label'].unique(), fontweight='bold',fontsize=14)
 axs.set_xlabel('', fontweight='bold',fontsize=18,labelpad=18)
 axs.set_xlabel('Frame fiducial number', fontweight='bold',fontsize=18,labelpad=18)
@@ -858,12 +825,25 @@ plt.close()
 
 #%%
 
+def outlier_removal_IQR(data, feature):
+	Q1=data[feature].quantile(0.25)
+	Q3=data[feature].quantile(0.75)
+	iqr=2.5*(Q3-Q1)
+	q1_idx = data[feature][data[feature] < Q1-iqr].index
+	data = data.drop(q1_idx)
+	q3_idx = data[feature][data[feature] > Q3+iqr].index
+	data = data.drop(q3_idx)
+	
+	return data
+
+avg_cluster_cleaned=outlier_removal_IQR(avg_cluster, 'error')
+
 
 fig, axs = plt.subplots(1,figsize=(12,8))
-sns.boxplot(x="label", y="euclidean",data=avg_cluster_coord[avg_cluster_coord['coord']=='x'],ax=axs)
+sns.boxplot(x="label", y="error",data=avg_cluster_cleaned,ax=axs)
 
-sns.swarmplot(x="label", y="euclidean", data=avg_cluster_coord, ax=axs, size=3,color=".6")
-axs.set_xticklabels(avg_cluster_coord['label'].unique(), fontweight='bold',fontsize=14)
+sns.swarmplot(x="label", y="error", data=avg_cluster_cleaned, ax=axs, size=3,color=".6")
+axs.set_xticklabels(avg_cluster['label'].unique(), fontweight='bold',fontsize=14)
 axs.set_xlabel('', fontweight='bold',fontsize=18,labelpad=18)
 axs.set_xlabel('Frame fiducial number', fontweight='bold',fontsize=18,labelpad=18)
 axs.set_ylabel('Distance from target (mm)', fontweight='bold',fontsize=18,labelpad=18)
@@ -884,10 +864,10 @@ plt.subplots_adjust(right=0.82)
 
 
 fig, axs = plt.subplots(2,sharex=True,figsize=(12,10))
-sns.violinplot(x="label", y="error",data=avg_cluster_coord[avg_cluster_coord['coord']=='x'], inner="quartile", color=".6",ax=axs[0])
+sns.violinplot(x="label", y="x",data=avg_cluster, inner="quartile", color=".6",ax=axs[0])
 
-sns.stripplot(x="label", y="error", data=avg_cluster_coord[avg_cluster_coord['coord']=='x'], jitter=True,dodge=True, ax=axs[0], size=3)
-axs[0].set_xticklabels(avg_cluster_coord['label'].unique(), fontweight='bold',fontsize=14)
+sns.stripplot(x="label", y="x", data=avg_cluster, jitter=True,dodge=True, ax=axs[0], size=3)
+axs[0].set_xticklabels(avg_cluster['label'].unique(), fontweight='bold',fontsize=14)
 axs[0].set_xlabel('', fontweight='bold',fontsize=18,labelpad=18)
 axs[0].set_ylabel('Distance x-axis (mm)', fontweight='bold',fontsize=18,labelpad=12)
 # Hide the right and top spines
@@ -896,7 +876,7 @@ axs[0].spines['top'].set_visible(False)
 axs[0].tick_params(axis='both', which='major', labelsize=14)
 #lgnd = ax.legend(fontsize = 15, bbox_to_anchor= (1.1, 1.05), title="Axis", title_fontsize = 18, shadow = True, facecolor = 'white')
 plt.suptitle('Source-Target distance after registration', y=1,fontproperties=fontTitle)
-arr_img = plt.imread(r'/media/greydon/KINGSTON34/phdCandidacy/thesis/imgs/axial_frame.png', format='png')
+arr_img = plt.imread(r'/home/greydon/Documents/GitHub/phd_thesis/figures/static/axial_frame.png', format='png')
 newax = fig.add_axes([.82, 0.7, 0.15, 0.15], anchor='NE', zorder=1)
 newax.imshow(arr_img)
 newax.axis('off')
@@ -905,16 +885,33 @@ axs[0].text(1.12, .36,'X-axis', transform=axs[0].transAxes, fontsize=12, fontwei
 axs[0].text(-.1, 1,'a)', transform=axs[0].transAxes, fontsize=18, fontweight='bold')
 
 
-sns.violinplot(x="label", y="error",data=avg_cluster_coord[avg_cluster_coord['coord']=='y'], inner="quartile", color=".6",ax=axs[1])
-sns.stripplot(x="label", y="error", data=avg_cluster_coord[avg_cluster_coord['coord']=='y'], jitter=True,dodge=True, ax=axs[1], size=3)
-axs[1].set_xticklabels(avg_cluster_coord['label'].unique(), fontweight='bold',fontsize=14)
+sns.violinplot(x="label", y="z",data=avg_cluster, inner="quartile", color=".6",ax=axs[1])
+sns.stripplot(x="label", y="z", data=avg_cluster, jitter=True,dodge=True, ax=axs[1], size=3)
+axs[1].set_xticklabels(avg_cluster['label'].unique(), fontweight='bold',fontsize=14)
 axs[1].set_xlabel('Frame Fiducial Point', fontweight='bold',fontsize=18,labelpad=18)
 axs[1].set_ylabel('Distance y-axis (mm)', fontweight='bold',fontsize=18,labelpad=12)
 # Hide the right and top spines
 axs[1].spines['right'].set_visible(False)
 axs[1].spines['top'].set_visible(False)
 axs[1].tick_params(axis='both', which='major', labelsize=14)
-arr_img = plt.imread(r'/media/greydon/KINGSTON34/phdCandidacy/thesis/imgs/axial_frame.png', format='png')
+arr_img = plt.imread(r'/home/greydon/Documents/GitHub/phd_thesis/figures/static/axial_frame.png', format='png')
+newax = fig.add_axes([.82, 0.25, 0.15, 0.15], anchor='NE', zorder=1)
+newax.imshow(arr_img)
+newax.axis('off')
+axs[1].annotate('', xy=(1.05,.72), xycoords='axes fraction', xytext=(1.05,.32), arrowprops=dict(arrowstyle="<->", color='black',linewidth=2))
+axs[1].text(1.02, .45,'Y-axis', transform=axs[1].transAxes, fontsize=12, fontweight='bold', rotation=90)
+axs[1].text(-.1, 1,'b)', transform=axs[1].transAxes, fontsize=18, fontweight='bold')
+
+sns.violinplot(x="label", y="y",data=avg_cluster, inner="quartile", color=".6",ax=axs[1])
+sns.stripplot(x="label", y="y", data=avg_cluster, jitter=True,dodge=True, ax=axs[1], size=3)
+axs[1].set_xticklabels(avg_cluster['label'].unique(), fontweight='bold',fontsize=14)
+axs[1].set_xlabel('Frame Fiducial Point', fontweight='bold',fontsize=18,labelpad=18)
+axs[1].set_ylabel('Distance y-axis (mm)', fontweight='bold',fontsize=18,labelpad=12)
+# Hide the right and top spines
+axs[1].spines['right'].set_visible(False)
+axs[1].spines['top'].set_visible(False)
+axs[1].tick_params(axis='both', which='major', labelsize=14)
+arr_img = plt.imread(r'/home/greydon/Documents/GitHub/phd_thesis/figures/static/axial_frame.png', format='png')
 newax = fig.add_axes([.82, 0.25, 0.15, 0.15], anchor='NE', zorder=1)
 newax.imshow(arr_img)
 newax.axis('off')
@@ -938,21 +935,19 @@ plt.close()
 
 
 #%%
-
+import statsmodels.api as sm
 from scipy import stats
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import statsmodels.stats.multicomp as multi
 import pingouin as pg
 
-stat,p=stats.f_twoway(error_data_melt[error_data_melt['system']==1]['error'],error_data_melt[error_data_melt['system']==2]['error'],
-				error_data_melt[error_data_melt['system']==3]['error'],error_data_melt[error_data_melt['system']==4]['error']
-				)
+stat,p=sm.stats.anova_lm(error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[0]]['error'].values,error_data_melt[error_data_melt['system']==error_data_melt['system'].unique()[1]]['error'].values, type=1)
 print('Statistics=%.3f, p=%.3f' % (stat, p))
 race_pairs = []
 
 pg.intraclass_corr(data=error_data_melt, targets='subject',ratings='error',raters='system')
 
-t=IPN_icc(np.c_[error_data_melt[error_data_melt['system']=='StealthStation']['error'], error_data_melt[error_data_melt['system']=='trajectoryGuide']['error']], 2, 'k')
+t=icc(np.c_[error_data_melt[error_data_melt['system']=='StealthStation']['error'], error_data_melt[error_data_melt['system']=='trajectoryGuide']['error']], 2, 'k')
 aov = pg.anova(data=error_data_melt, dv='error', between='system', detailed=True)
 print(aov)
 
