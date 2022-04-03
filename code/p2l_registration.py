@@ -145,15 +145,17 @@ def prep_p2l(X,Y):
 	return X,Y,T
 
 
-ifile=r'/media/veracrypt6/projects/stealthMRI/derivatives/trajectoryGuide/derivatives/sub-P150/frame/sub-P150_space-leksellg_desc-centroids_fids.tsv'
+ifile=r'/media/veracrypt6/projects/stealthMRI/derivatives/trajectoryGuide/derivatives/frame/sub-P150_space-leksellg_desc-centroids_fids.tsv'
 ifile2=r'/home/greydon/Downloads/sub-P150_space-leksellg_desc-fiducials_fids.fcsv'
+
 df_tmp = pd.read_csv( ifile, header=0,sep='\t')
 Y = df_tmp[['ideal_x','ideal_y','ideal_z']].to_numpy()
 
 df_tmp2 = pd.read_csv( ifile2, header=2,sep=',')
 X = df_tmp2[['x','y','z']].to_numpy()
 
-X,Y,D=prep_p2l(X,Y)
+R,t,A=AOPA_Major(X.T,Y.T,.0005)
+mat = np.dot(R, A)
 
 X.shape,Y.shape,D.shape
 R,t,A,Q,fre=p2l(X, Y, D, .0005)
@@ -163,18 +165,22 @@ t=t.T
 
 lps2ras = np.diag([-1, -1, 1])
 data = np.eye(4)
-data[0:3, 3] = t
-data[:3, :3] = np.dot(np.dot(lps2ras, R), lps2ras)
+data[0:3, 3] = t.T
+data[:3, :3] = mat
+
+lps2ras=np.diag([-1, -1, 1, 1])
+ras2lps=np.diag([-1, -1, 1, 1])
+transform_lps=np.dot(data,lps2ras)
 
 transform_matrix = vtk.vtkMatrix4x4()
-dimensions = len(data) - 1
+dimensions = len(transform_lps) - 1
 for row in range(dimensions + 1):
 	for col in range(dimensions + 1):
-		transform_matrix.SetElement(row, col, data[(row, col)])
+		transform_matrix.SetElement(row, col, transform_lps[(row, col)])
 
 
 inputTransform = slicer.mrmlScene.AddNode(slicer.vtkMRMLLinearTransformNode())
 inputTransform.SetName('p2l')
-transformOut.SetMatrixTransformFromParent(transform_matrix)
+inputTransform.SetMatrixTransformFromParent(transform_matrix)
 
 
